@@ -1,13 +1,21 @@
 import os
-from datetime import time
+from datetime import datetime, timedelta, time, timezone
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import discord
-import pandas as pd
-import yfinance as yf
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+
+from alpaca.data.enums import DataFeed
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import (
+    StockBarsRequest,
+    StockLatestTradeRequest,
+    StockSnapshotRequest,
+)
+from alpaca.data.timeframe import TimeFrame
 
 load_dotenv()
 
@@ -15,15 +23,42 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 API_KEY = os.getenv("ALPHA_VANTAGE_KEY")
 guild_id_raw = os.getenv("GUILD_ID")
 
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+ALPACA_FEED_RAW = os.getenv("ALPACA_FEED", "IEX").upper()
+
 if not TOKEN:
     raise ValueError("Missing DISCORD_TOKEN environment variable")
 if not guild_id_raw:
     raise ValueError("Missing GUILD_ID environment variable")
+if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+    raise ValueError("Missing Alpaca API credentials")
 
 GUILD_ID = int(guild_id_raw)
 
+feed_map = {
+    "IEX": DataFeed.IEX,
+    "SIP": DataFeed.SIP,
+    "DELAYED_SIP": DataFeed.DELAYED_SIP,
+}
+ALPACA_FEED = feed_map.get(ALPACA_FEED_RAW, DataFeed.IEX)
+
+data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+def fmt_price(value):
+    return f"${value:.2f}" if value is not None else "N/A"
+
+
+def fmt_pct(value):
+    return f"{value:+.2f}%" if value is not None else "N/A"
+
+
+def fmt_volume(value):
+    return f"{int(value):,}" if value is not None else "N/A"
 
 
 @bot.event
@@ -39,26 +74,31 @@ async def on_ready():
         print(f"Sync error: {e}")
 
 
-def fmt_price(value):
-    return f"${value:.2f}" if value is not None else "N/A"
+@bot.tree.command(name="help", description="Show bot commands", guild=discord.Object(id=GUILD_ID))
+async def help_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="StockBuddyBot Commands",
+        description="Available commands",
+    )
 
+    embed.add_field(
+        name="/analyze [ticker]",
+        value="Live market snapshot with trend, levels, bias, and volume.",
+        inline=False
+    )
+    embed.add_field(
+        name="/news [ticker]",
+        value="Latest news headlines for a ticker.",
+        inline=False
+    )
+    embed.add_field(
+        name="/help",
+        value="Show this command list.",
+        inline=False
+    )
 
-def fmt_pct(value):
-    return f"{value:+.2f}%" if value is not None else "N/A"
-
-
-def fmt_volume(value):
-    return f"{int(value):,}" if value is not None else "N/A"
-
-
-def get_trend(price: float, ma20: float, ma50: float) -> str:
-    if price > ma20 and price > ma50:
-        return "Bullish (above 20 & 50 MA)"
-    if price < ma20 and price < ma50:
-        return "Bearish (below 20 & 50 MA)"
-    if price > ma20 and price < ma50:
-        return "Mixed (above 20, below 50)"
-    return "Mixed (below 20, above 50)"
+    embed.set_footer(text="Example: /analyze NVDA")
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="news", description="Get stock news", guild=discord.Object(id=GUILD_ID))
@@ -92,7 +132,7 @@ async def news(interaction: discord.Interaction, symbol: str):
             description="Latest headlines",
         )
 
-        for article in articles[:5]:
+        for article in articles:
             title = article.get("title", "No title")
             source = article.get("source", "Unknown source")
             article_url = article.get("url", "")
@@ -115,130 +155,199 @@ async def news(interaction: discord.Interaction, symbol: str):
         await interaction.followup.send(f"Error fetching news for {symbol}: {e}")
 
 
-@bot.tree.command(name="analyze", description="Market data snapshot", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="analyze", description="Live market data snapshot", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(symbol="Stock ticker")
 async def analyze(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
 
     symbol = symbol.upper().strip()
+    ny_tz = ZoneInfo("America/New_York")
+    now_utc = datetime.now(timezone.utc)
+    now_ny = now_utc.astimezone(ny_tz)
 
     try:
-        ticker = yf.Ticker(symbol)
+        latest_trade_req = StockLatestTradeRequest(
+            symbol_or_symbols=symbol,
+            feed=ALPACA_FEED
+        )
+        latest_trade_resp = data_client.get_stock_latest_trade(latest_trade_req)
+        latest_trade = latest_trade_resp[symbol]
+        live_price = float(latest_trade.price)
 
-        # Daily candles for MA + previous day data
-        daily = ticker.history(period="3mo", interval="1d", auto_adjust=False)
+        snapshot_req = StockSnapshotRequest(
+            symbol_or_symbols=symbol,
+            feed=ALPACA_FEED
+        )
+        snapshot_resp = data_client.get_stock_snapshot(snapshot_req)
+        snapshot = snapshot_resp[symbol]
 
-        # Intraday with pre/post market
-        intraday = ticker.history(period="1d", interval="1m", prepost=True, auto_adjust=False)
+        prev_daily_bar = snapshot.previous_daily_bar
+        daily_bar = snapshot.daily_bar
 
-        if daily.empty:
-            await interaction.followup.send(f"No data found for {symbol}.")
+        prev_close = float(prev_daily_bar.close) if prev_daily_bar else None
+        today_high = float(daily_bar.high) if daily_bar else None
+        today_low = float(daily_bar.low) if daily_bar else None
+        today_volume = float(daily_bar.volume) if daily_bar else None
+
+        pct_change = None
+        if prev_close:
+            pct_change = ((live_price - prev_close) / prev_close) * 100
+
+        daily_start = (now_ny - timedelta(days=90)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).astimezone(timezone.utc)
+
+        daily_req = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Day,
+            start=daily_start,
+            end=now_utc,
+            feed=ALPACA_FEED
+        )
+        daily_bars_resp = data_client.get_stock_bars(daily_req)
+        daily_bars = daily_bars_resp[symbol]
+
+        if len(daily_bars) < 50:
+            await interaction.followup.send(f"Not enough daily data to analyze {symbol}.")
             return
 
-        daily = daily.dropna()
-        closes = daily["Close"]
+        closes = [float(bar.close) for bar in daily_bars]
+        ma20 = sum(closes[-20:]) / 20
+        ma50 = sum(closes[-50:]) / 50
 
-        if len(closes) < 50:
-            await interaction.followup.send(f"Not enough data to analyze {symbol}.")
-            return
+        prev_day_high = float(daily_bars[-2].high)
+        prev_day_low = float(daily_bars[-2].low)
 
-        price = float(closes.iloc[-1])
-        prev_close = float(closes.iloc[-2])
-        ma20 = float(closes.tail(20).mean())
-        ma50 = float(closes.tail(50).mean())
-        trend = get_trend(price, ma20, ma50)
-        pct_change = ((price - prev_close) / prev_close) * 100 if prev_close else 0
+        avg_volume_20 = sum(float(bar.volume) for bar in daily_bars[-20:]) / 20
 
-        prev_day_high = float(daily["High"].iloc[-2])
-        prev_day_low = float(daily["Low"].iloc[-2])
+        session_start_ny = now_ny.replace(hour=4, minute=0, second=0, microsecond=0)
+        bars_req = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Minute,
+            start=session_start_ny.astimezone(timezone.utc),
+            end=now_utc,
+            feed=ALPACA_FEED
+        )
+        minute_bars_resp = data_client.get_stock_bars(bars_req)
+        minute_bars = minute_bars_resp[symbol]
 
-        today_high = None
-        today_low = None
         premarket_high = None
         premarket_low = None
-        today_volume = None
 
-        if not intraday.empty:
-            intraday = intraday.dropna().copy()
+        pm_highs = []
+        pm_lows = []
 
-            times = pd.Series(intraday.index.time, index=intraday.index)
+        for bar in minute_bars:
+            ts_ny = bar.timestamp.astimezone(ny_tz)
+            if time(4, 0) <= ts_ny.time() < time(9, 30):
+                pm_highs.append(float(bar.high))
+                pm_lows.append(float(bar.low))
 
-            regular_start = time(9, 30)
-            regular_end = time(16, 0)
+        if pm_highs:
+            premarket_high = max(pm_highs)
+            premarket_low = min(pm_lows)
 
-            regular_mask = (times >= regular_start) & (times <= regular_end)
-            premarket_mask = times < regular_start
+        if live_price > ma20 and live_price > ma50:
+            trend_title = "Bullish"
+            trend_detail = "Above 20 & 50 MA"
+        elif live_price < ma20 and live_price < ma50:
+            trend_title = "Bearish"
+            trend_detail = "Below 20 & 50 MA"
+        elif live_price > ma20 and live_price < ma50:
+            trend_title = "Mixed"
+            trend_detail = "Above 20, below 50 MA"
+        else:
+            trend_title = "Mixed"
+            trend_detail = "Below 20, above 50 MA"
 
-            regular_df = intraday.loc[regular_mask]
-            premarket_df = intraday.loc[premarket_mask]
+        volume_text = "N/A"
+        if today_volume is not None:
+            rel_vol = today_volume / avg_volume_20 if avg_volume_20 else 0
+            if rel_vol >= 1.5:
+                vol_context = "High volume"
+            elif rel_vol >= 1.0:
+                vol_context = "Normal volume"
+            else:
+                vol_context = "Light volume"
+            volume_text = f"{fmt_volume(today_volume)} ({vol_context})"
 
-            if not regular_df.empty:
-                today_high = float(regular_df["High"].max())
-                today_low = float(regular_df["Low"].min())
-                today_volume = float(regular_df["Volume"].sum())
-                price = float(regular_df["Close"].iloc[-1])
-                pct_change = ((price - prev_close) / prev_close) * 100 if prev_close else 0
+        bias_lines = []
 
-            if not premarket_df.empty:
-                premarket_high = float(premarket_df["High"].max())
-                premarket_low = float(premarket_df["Low"].min())
+        if trend_title == "Bullish":
+            if live_price > prev_day_high:
+                bias_header = f"Bullish above {fmt_price(prev_day_high)} (PD High)"
+            else:
+                bias_header = f"Bullish, but needs reclaim of {fmt_price(prev_day_high)}"
+
+            if today_high is not None:
+                bias_lines.append(f"→ Watch continuation above {fmt_price(today_high)}")
+            if premarket_high is not None:
+                bias_lines.append(f"→ Stronger if holding above {fmt_price(premarket_high)}")
+            if today_low is not None:
+                bias_lines.append(f"→ Weakens below {fmt_price(today_low)}")
+
+        elif trend_title == "Bearish":
+            if live_price < prev_day_low:
+                bias_header = f"Bearish below {fmt_price(prev_day_low)} (PD Low)"
+            else:
+                bias_header = f"Bearish, but needs loss of {fmt_price(prev_day_low)}"
+
+            if today_low is not None:
+                bias_lines.append(f"→ Watch continuation below {fmt_price(today_low)}")
+            if premarket_low is not None:
+                bias_lines.append(f"→ Stronger if staying below {fmt_price(premarket_low)}")
+            if today_high is not None:
+                bias_lines.append(f"→ Weakens above {fmt_price(today_high)}")
+
+        else:
+            bias_header = "Choppy / range until key levels break"
+            if today_high is not None and today_low is not None:
+                bias_lines.append(f"→ Above {fmt_price(today_high)} could trend")
+                bias_lines.append(f"→ Below {fmt_price(today_low)} could break down")
+            if premarket_high is not None and premarket_low is not None:
+                bias_lines.append(
+                    f"→ Watch PM range {fmt_price(premarket_low)} - {fmt_price(premarket_high)}"
+                )
+
+        bias_text = bias_header
+        if bias_lines:
+            bias_text += "\n" + "\n".join(bias_lines)
+
+        levels_text = (
+            f"**HOD:** {fmt_price(today_high)}\n"
+            f"**LOD:** {fmt_price(today_low)}\n"
+            f"**PM High:** {fmt_price(premarket_high)}\n"
+            f"**PM Low:** {fmt_price(premarket_low)}\n"
+            f"**PD High:** {fmt_price(prev_day_high)}\n"
+            f"**PD Low:** {fmt_price(prev_day_low)}"
+        )
 
         embed = discord.Embed(
             title=f"{symbol} Analysis",
-            description="Live market snapshot",
+            description=f"Live Alpaca snapshot ({ALPACA_FEED_RAW})"
         )
 
-        embed.add_field(name="Price", value=fmt_price(price), inline=True)
+        embed.add_field(name="Price", value=fmt_price(live_price), inline=True)
         embed.add_field(name="Change", value=fmt_pct(pct_change), inline=True)
-        embed.add_field(name="Trend", value=trend, inline=False)
+        embed.add_field(name="Volume", value=volume_text, inline=True)
+
+        embed.add_field(
+            name="Trend",
+            value=f"**{trend_title}**\n{trend_detail}",
+            inline=False
+        )
 
         embed.add_field(name="20 MA", value=fmt_price(ma20), inline=True)
         embed.add_field(name="50 MA", value=fmt_price(ma50), inline=True)
-        embed.add_field(name="Volume", value=fmt_volume(today_volume), inline=True)
-
-        embed.add_field(name="Today High", value=fmt_price(today_high), inline=True)
-        embed.add_field(name="Today Low", value=fmt_price(today_low), inline=True)
         embed.add_field(name="Prev Close", value=fmt_price(prev_close), inline=True)
 
-        embed.add_field(name="Premarket High", value=fmt_price(premarket_high), inline=True)
-        embed.add_field(name="Premarket Low", value=fmt_price(premarket_low), inline=True)
-        embed.add_field(name="Prev Day High", value=fmt_price(prev_day_high), inline=True)
-
-        embed.add_field(name="Prev Day Low", value=fmt_price(prev_day_low), inline=True)
+        embed.add_field(name="Levels", value=levels_text, inline=False)
+        embed.add_field(name="Bias", value=bias_text[:1024], inline=False)
 
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
         await interaction.followup.send(f"Error analyzing {symbol}: {e}")
-
-@bot.tree.command(name="help", description="Show bot commands", guild=discord.Object(id=GUILD_ID))
-async def help_command(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="📊 Stock Bot Commands",
-        description="Here’s what I can do:",
-    )
-
-    embed.add_field(
-        name="/analyze [ticker]",
-        value="Get market data (price, trend, volume, highs/lows)",
-        inline=False
-    )
-
-    embed.add_field(
-        name="/news [ticker]",
-        value="Get latest news for a stock",
-        inline=False
-    )
-
-    embed.add_field(
-        name="/help",
-        value="Show this command list",
-        inline=False
-    )
-
-    embed.set_footer(text="Example: /analyze AAPL")
-
-    await interaction.response.send_message(embed=embed)
 
 
 bot.run(TOKEN)
