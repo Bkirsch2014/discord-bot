@@ -144,14 +144,40 @@ async def news(interaction: discord.Interaction, symbol: str):
             return
 
         lines = []
+
         for article in articles[:3]:
-            title = article.get("title", "No title")
+            title = None
+            link = None
+
+            # Try common direct keys
+            title = article.get("title")
             link = article.get("link") or article.get("url")
+
+            # Try nested content structure
+            if not title and isinstance(article.get("content"), dict):
+                content = article["content"]
+                title = content.get("title")
+                link = link or content.get("canonicalUrl", {}).get("url")
+
+            # Try nested thumbnail/clickthrough style objects if present
+            if not title and isinstance(article.get("headline"), str):
+                title = article.get("headline")
+
+            if not link and isinstance(article.get("canonicalUrl"), dict):
+                link = article["canonicalUrl"].get("url")
+
+            # Final fallback
+            if not title:
+                title = "Untitled article"
 
             if link:
                 lines.append(f"**{title}**\n{link}")
             else:
                 lines.append(f"**{title}**")
+
+        if not lines:
+            await interaction.followup.send(f"No usable news articles found for {symbol}.")
+            return
 
         message = "\n\n".join(lines)
         await interaction.followup.send(message)
@@ -213,8 +239,8 @@ async def analyze(interaction: discord.Interaction, symbol: str):
         if prev_close:
             pct_change = ((live_price - prev_close) / prev_close) * 100
 
-        # Daily bars
-        daily_start = (now_ny - timedelta(days=90)).replace(
+        # Daily bars for EMA 20, SMA 200, previous day high/low
+        daily_start = (now_ny - timedelta(days=300)).replace(
             hour=0, minute=0, second=0, microsecond=0
         ).astimezone(timezone.utc)
 
@@ -233,13 +259,20 @@ async def analyze(interaction: discord.Interaction, symbol: str):
 
         daily_bars = daily_bars_resp.data[symbol]
 
-        if len(daily_bars) < 50:
+        if len(daily_bars) < 200:
             await interaction.followup.send(f"Not enough daily data to analyze {symbol}.")
             return
 
         closes = [float(bar.close) for bar in daily_bars]
-        ma20 = sum(closes[-20:]) / 20
-        ma50 = sum(closes[-50:]) / 50
+
+        # EMA 20
+        ema20 = closes[0]
+        multiplier = 2 / (20 + 1)
+        for close in closes[1:]:
+            ema20 = (close - ema20) * multiplier + ema20
+
+        # SMA 200
+        sma200 = sum(closes[-200:]) / 200
 
         prev_day_high = float(daily_bars[-2].high)
         prev_day_low = float(daily_bars[-2].low)
@@ -263,7 +296,6 @@ async def analyze(interaction: discord.Interaction, symbol: str):
             feed=ALPACA_FEED
         )
         minute_bars_resp = data_client.get_stock_bars(bars_req)
-
         minute_bars = minute_bars_resp.data.get(symbol, [])
 
         premarket_high = None
@@ -281,8 +313,19 @@ async def analyze(interaction: discord.Interaction, symbol: str):
             premarket_high = max(pm_highs)
             premarket_low = min(pm_lows)
 
-        # Trend
-        trend_title, trend_detail = get_trend(live_price, ma20, ma50)
+        # Trend using EMA 20 and SMA 200
+        if live_price > ema20 and live_price > sma200:
+            trend_title = "Bullish"
+            trend_detail = "Above EMA 20 & SMA 200"
+        elif live_price < ema20 and live_price < sma200:
+            trend_title = "Bearish"
+            trend_detail = "Below EMA 20 & SMA 200"
+        elif live_price > ema20 and live_price < sma200:
+            trend_title = "Mixed"
+            trend_detail = "Above EMA 20, below SMA 200"
+        else:
+            trend_title = "Mixed"
+            trend_detail = "Below EMA 20, above SMA 200"
 
         # Volume context
         volume_text = "N/A"
@@ -301,7 +344,7 @@ async def analyze(interaction: discord.Interaction, symbol: str):
 
         if trend_title == "Bullish":
             if live_price > prev_day_high:
-                bias_header = f"Bullish above {fmt_price(prev_day_high)} (PD High)"
+                bias_header = f"Bullish above {fmt_price(prev_day_high)} (Previous Day High)"
             else:
                 bias_header = f"Bullish, but needs reclaim of {fmt_price(prev_day_high)}"
 
@@ -314,7 +357,7 @@ async def analyze(interaction: discord.Interaction, symbol: str):
 
         elif trend_title == "Bearish":
             if live_price < prev_day_low:
-                bias_header = f"Bearish below {fmt_price(prev_day_low)} (PD Low)"
+                bias_header = f"Bearish below {fmt_price(prev_day_low)} (Previous Day Low)"
             else:
                 bias_header = f"Bearish, but needs loss of {fmt_price(prev_day_low)}"
 
@@ -326,13 +369,13 @@ async def analyze(interaction: discord.Interaction, symbol: str):
                 bias_lines.append(f"→ Weakens above {fmt_price(today_high)}")
 
         else:
-            bias_header = "Choppy / range until key levels break"
+            bias_header = "Range / mixed until key levels break"
             if today_high is not None and today_low is not None:
                 bias_lines.append(f"→ Above {fmt_price(today_high)} could trend")
                 bias_lines.append(f"→ Below {fmt_price(today_low)} could break down")
             if premarket_high is not None and premarket_low is not None:
                 bias_lines.append(
-                    f"→ Watch PM range {fmt_price(premarket_low)} - {fmt_price(premarket_high)}"
+                    f"→ Watch premarket range {fmt_price(premarket_low)} - {fmt_price(premarket_high)}"
                 )
 
         bias_text = bias_header
@@ -340,17 +383,17 @@ async def analyze(interaction: discord.Interaction, symbol: str):
             bias_text += "\n" + "\n".join(bias_lines)
 
         levels_text = (
-            f"**HOD:** {fmt_price(today_high)}\n"
-            f"**LOD:** {fmt_price(today_low)}\n"
-            f"**PM High:** {fmt_price(premarket_high)}\n"
-            f"**PM Low:** {fmt_price(premarket_low)}\n"
-            f"**PD High:** {fmt_price(prev_day_high)}\n"
-            f"**PD Low:** {fmt_price(prev_day_low)}"
+            f"**Today High:** {fmt_price(today_high)}\n"
+            f"**Today Low:** {fmt_price(today_low)}\n"
+            f"**Premarket High:** {fmt_price(premarket_high)}\n"
+            f"**Premarket Low:** {fmt_price(premarket_low)}\n"
+            f"**Previous Day High:** {fmt_price(prev_day_high)}\n"
+            f"**Previous Day Low:** {fmt_price(prev_day_low)}"
         )
 
         embed = discord.Embed(
             title=f"{symbol} Analysis",
-            description=f"Live Alpaca snapshot ({ALPACA_FEED_RAW})"
+            description="Reference only — not for entering a trade."
         )
 
         embed.add_field(name="Price", value=fmt_price(live_price), inline=True)
@@ -363,9 +406,9 @@ async def analyze(interaction: discord.Interaction, symbol: str):
             inline=False
         )
 
-        embed.add_field(name="20 MA", value=fmt_price(ma20), inline=True)
-        embed.add_field(name="50 MA", value=fmt_price(ma50), inline=True)
-        embed.add_field(name="Prev Close", value=fmt_price(prev_close), inline=True)
+        embed.add_field(name="EMA 20", value=fmt_price(ema20), inline=True)
+        embed.add_field(name="SMA 200", value=fmt_price(sma200), inline=True)
+        embed.add_field(name="Previous Close", value=fmt_price(prev_close), inline=True)
 
         embed.add_field(name="Levels", value=levels_text, inline=False)
         embed.add_field(name="Bias", value=bias_text[:1024], inline=False)
@@ -375,5 +418,4 @@ async def analyze(interaction: discord.Interaction, symbol: str):
     except Exception as e:
         print(f"ANALYZE ERROR: {e}")
         await interaction.followup.send(f"Error analyzing {symbol}: {e}")
-
 bot.run(TOKEN)
