@@ -220,22 +220,22 @@ async def analyze(interaction: discord.Interaction, symbol: str):
 
         avg_volume_20 = sum(float(bar.volume) for bar in daily_bars[-20:]) / 20
 
-        if now_ny.time() < time(4, 0):
-    session_start_ny = (now_ny - timedelta(days=1)).replace(
-        hour=4, minute=0, second=0, microsecond=0
-    )
-else:
-    session_start_ny = now_ny.replace(
-        hour=4, minute=0, second=0, microsecond=0
-    )
+            if now_ny.time() < time(4, 0):
+            session_start_ny = (now_ny - timedelta(days=1)).replace(
+                hour=4, minute=0, second=0, microsecond=0
+            )
+        else:
+            session_start_ny = now_ny.replace(
+                hour=4, minute=0, second=0, microsecond=0
+            )
 
-bars_req = StockBarsRequest(
-    symbol_or_symbols=symbol,
-    timeframe=TimeFrame.Minute,
-    start=session_start_ny.astimezone(timezone.utc),
-    end=now_utc,
-    feed=ALPACA_FEED
-)
+        bars_req = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Minute,
+            start=session_start_ny.astimezone(timezone.utc),
+            end=now_utc,
+            feed=ALPACA_FEED
+        )
         minute_bars_resp = data_client.get_stock_bars(bars_req)
         minute_bars = minute_bars_resp[symbol]
 
