@@ -19,22 +19,25 @@ from alpaca.data.timeframe import TimeFrame
 
 load_dotenv()
 
+# ---------------------------
+# Environment variables
+# ---------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
-API_KEY = os.getenv("ALPHA_VANTAGE_KEY")
-guild_id_raw = os.getenv("GUILD_ID")
+NEWS_API_KEY = os.getenv("ALPHA_VANTAGE_KEY")
+GUILD_ID_RAW = os.getenv("GUILD_ID")
 
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 ALPACA_FEED_RAW = os.getenv("ALPACA_FEED", "IEX").upper()
 
 if not TOKEN:
-    raise ValueError("Missing DISCORD_TOKEN environment variable")
-if not guild_id_raw:
-    raise ValueError("Missing GUILD_ID environment variable")
+    raise ValueError("Missing DISCORD_TOKEN")
+if not GUILD_ID_RAW:
+    raise ValueError("Missing GUILD_ID")
 if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
-    raise ValueError("Missing Alpaca API credentials")
+    raise ValueError("Missing ALPACA_API_KEY or ALPACA_SECRET_KEY")
 
-GUILD_ID = int(guild_id_raw)
+GUILD_ID = int(GUILD_ID_RAW)
 
 feed_map = {
     "IEX": DataFeed.IEX,
@@ -45,10 +48,16 @@ ALPACA_FEED = feed_map.get(ALPACA_FEED_RAW, DataFeed.IEX)
 
 data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 
+# ---------------------------
+# Discord bot setup
+# ---------------------------
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
+# ---------------------------
+# Helpers
+# ---------------------------
 def fmt_price(value):
     return f"${value:.2f}" if value is not None else "N/A"
 
@@ -61,6 +70,19 @@ def fmt_volume(value):
     return f"{int(value):,}" if value is not None else "N/A"
 
 
+def get_trend(price: float, ma20: float, ma50: float):
+    if price > ma20 and price > ma50:
+        return "Bullish", "Above 20 & 50 MA"
+    if price < ma20 and price < ma50:
+        return "Bearish", "Below 20 & 50 MA"
+    if price > ma20 and price < ma50:
+        return "Mixed", "Above 20, below 50 MA"
+    return "Mixed", "Below 20, above 50 MA"
+
+
+# ---------------------------
+# Events
+# ---------------------------
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
@@ -74,21 +96,23 @@ async def on_ready():
         print(f"Sync error: {e}")
 
 
+# ---------------------------
+# /help
+# ---------------------------
 @bot.tree.command(name="help", description="Show bot commands", guild=discord.Object(id=GUILD_ID))
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="StockBuddyBot Commands",
         description="Available commands",
     )
-
     embed.add_field(
         name="/analyze [ticker]",
-        value="Live market snapshot with trend, levels, bias, and volume.",
+        value="Live market snapshot with price, trend, levels, bias, and volume.",
         inline=False
     )
     embed.add_field(
         name="/news [ticker]",
-        value="Latest news headlines for a ticker.",
+        value="Latest stock headlines.",
         inline=False
     )
     embed.add_field(
@@ -96,24 +120,26 @@ async def help_command(interaction: discord.Interaction):
         value="Show this command list.",
         inline=False
     )
-
     embed.set_footer(text="Example: /analyze NVDA")
     await interaction.response.send_message(embed=embed)
 
 
+# ---------------------------
+# /news
+# ---------------------------
 @bot.tree.command(name="news", description="Get stock news", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(symbol="Stock ticker")
 async def news(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
 
-    if not API_KEY:
-        await interaction.followup.send("Missing ALPHA_VANTAGE_KEY in environment variables.")
+    if not NEWS_API_KEY:
+        await interaction.followup.send("Missing ALPHA_VANTAGE_KEY.")
         return
 
     symbol = symbol.upper().strip()
     url = (
         "https://www.alphavantage.co/query"
-        f"?function=NEWS_SENTIMENT&tickers={symbol}&limit=5&apikey={API_KEY}"
+        f"?function=NEWS_SENTIMENT&tickers={symbol}&limit=5&apikey={NEWS_API_KEY}"
     )
 
     try:
@@ -134,7 +160,7 @@ async def news(interaction: discord.Interaction, symbol: str):
 
         for article in articles:
             title = article.get("title", "No title")
-            source = article.get("source", "Unknown source")
+            source = article.get("source", "Unknown")
             article_url = article.get("url", "")
             summary = article.get("summary", "No summary available.")
 
@@ -152,20 +178,27 @@ async def news(interaction: discord.Interaction, symbol: str):
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
+        print(f"NEWS ERROR: {e}")
         await interaction.followup.send(f"Error fetching news for {symbol}: {e}")
 
 
+# ---------------------------
+# /analyze
+# ---------------------------
 @bot.tree.command(name="analyze", description="Live market data snapshot", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(symbol="Stock ticker")
 async def analyze(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
 
     symbol = symbol.upper().strip()
+    print(f"Running analyze for {symbol}")
+
     ny_tz = ZoneInfo("America/New_York")
     now_utc = datetime.now(timezone.utc)
     now_ny = now_utc.astimezone(ny_tz)
 
     try:
+        # Latest live trade
         latest_trade_req = StockLatestTradeRequest(
             symbol_or_symbols=symbol,
             feed=ALPACA_FEED
@@ -174,6 +207,7 @@ async def analyze(interaction: discord.Interaction, symbol: str):
         latest_trade = latest_trade_resp[symbol]
         live_price = float(latest_trade.price)
 
+        # Snapshot for today's bar / previous daily bar
         snapshot_req = StockSnapshotRequest(
             symbol_or_symbols=symbol,
             feed=ALPACA_FEED
@@ -193,6 +227,7 @@ async def analyze(interaction: discord.Interaction, symbol: str):
         if prev_close:
             pct_change = ((live_price - prev_close) / prev_close) * 100
 
+        # Daily bars for moving averages + PD high/low
         daily_start = (now_ny - timedelta(days=90)).replace(
             hour=0, minute=0, second=0, microsecond=0
         ).astimezone(timezone.utc)
@@ -217,10 +252,10 @@ async def analyze(interaction: discord.Interaction, symbol: str):
 
         prev_day_high = float(daily_bars[-2].high)
         prev_day_low = float(daily_bars[-2].low)
-
         avg_volume_20 = sum(float(bar.volume) for bar in daily_bars[-20:]) / 20
 
-            if now_ny.time() < time(4, 0):
+        # Premarket bars
+        if now_ny.time() < time(4, 0):
             session_start_ny = (now_ny - timedelta(days=1)).replace(
                 hour=4, minute=0, second=0, microsecond=0
             )
@@ -241,7 +276,6 @@ async def analyze(interaction: discord.Interaction, symbol: str):
 
         premarket_high = None
         premarket_low = None
-
         pm_highs = []
         pm_lows = []
 
@@ -255,19 +289,10 @@ async def analyze(interaction: discord.Interaction, symbol: str):
             premarket_high = max(pm_highs)
             premarket_low = min(pm_lows)
 
-        if live_price > ma20 and live_price > ma50:
-            trend_title = "Bullish"
-            trend_detail = "Above 20 & 50 MA"
-        elif live_price < ma20 and live_price < ma50:
-            trend_title = "Bearish"
-            trend_detail = "Below 20 & 50 MA"
-        elif live_price > ma20 and live_price < ma50:
-            trend_title = "Mixed"
-            trend_detail = "Above 20, below 50 MA"
-        else:
-            trend_title = "Mixed"
-            trend_detail = "Below 20, above 50 MA"
+        # Trend
+        trend_title, trend_detail = get_trend(live_price, ma20, ma50)
 
+        # Volume context
         volume_text = "N/A"
         if today_volume is not None:
             rel_vol = today_volume / avg_volume_20 if avg_volume_20 else 0
@@ -279,6 +304,7 @@ async def analyze(interaction: discord.Interaction, symbol: str):
                 vol_context = "Light volume"
             volume_text = f"{fmt_volume(today_volume)} ({vol_context})"
 
+        # Bias
         bias_lines = []
 
         if trend_title == "Bullish":
@@ -355,6 +381,7 @@ async def analyze(interaction: discord.Interaction, symbol: str):
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
+        print(f"ANALYZE ERROR: {e}")
         await interaction.followup.send(f"Error analyzing {symbol}: {e}")
 
 
