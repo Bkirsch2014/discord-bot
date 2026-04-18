@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
+import yfinance as yf
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
@@ -132,56 +133,32 @@ async def help_command(interaction: discord.Interaction):
 async def news(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
 
-    if not NEWS_API_KEY:
-        await interaction.followup.send("Missing ALPHA_VANTAGE_KEY.")
-        return
-
     symbol = symbol.upper().strip()
-    url = (
-        "https://www.alphavantage.co/query"
-        f"?function=NEWS_SENTIMENT&tickers={symbol}&limit=5&apikey={NEWS_API_KEY}"
-    )
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=30) as response:
-                data = await response.json()
-
-        articles = data.get("feed", [])[:5]
+        ticker = yf.Ticker(symbol)
+        articles = ticker.news
 
         if not articles:
             await interaction.followup.send(f"No news found for {symbol}.")
             return
 
-        embed = discord.Embed(
-            title=f"{symbol} News",
-            description="Latest headlines",
-        )
-
-        for article in articles:
+        lines = []
+        for article in articles[:3]:
             title = article.get("title", "No title")
-            source = article.get("source", "Unknown")
-            article_url = article.get("url", "")
-            summary = article.get("summary", "No summary available.")
+            link = article.get("link") or article.get("url")
 
-            value = f"**Source:** {source}\n"
-            if article_url:
-                value += f"[Read article]({article_url})\n"
-            value += f"{summary[:180]}..."
+            if link:
+                lines.append(f"**{title}**\n{link}")
+            else:
+                lines.append(f"**{title}**")
 
-            embed.add_field(
-                name=title[:256],
-                value=value[:1024],
-                inline=False
-            )
-
-        await interaction.followup.send(embed=embed)
+        message = "\n\n".join(lines)
+        await interaction.followup.send(message)
 
     except Exception as e:
         print(f"NEWS ERROR: {e}")
         await interaction.followup.send(f"Error fetching news for {symbol}: {e}")
-
-
 # ---------------------------
 # /analyze
 # ---------------------------
