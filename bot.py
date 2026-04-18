@@ -211,5 +211,34 @@ async def analyze(interaction: discord.Interaction, symbol: str):
     except Exception as e:
         await interaction.followup.send(f"Error analyzing {symbol}: {e}")
 
+@bot.tree.command(name="help", description="Show bot commands", guild=discord.Object(id=GUILD_ID))
+async def help_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📊 Stock Bot Commands",
+        description="Here’s what I can do:",
+    )
+
+    embed.add_field(
+        name="/analyze [ticker]",
+        value="Get market data (price, trend, volume, highs/lows)",
+        inline=False
+    )
+
+    embed.add_field(
+        name="/news [ticker]",
+        value="Get latest news for a stock",
+        inline=False
+    )
+
+    embed.add_field(
+        name="/help",
+        value="Show this command list",
+        inline=False
+    )
+
+    embed.set_footer(text="Example: /analyze AAPL")
+
+    await interaction.response.send_message(embed=embed)
+
 
 bot.run(TOKEN)
