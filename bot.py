@@ -143,44 +143,58 @@ async def news(interaction: discord.Interaction, symbol: str):
             await interaction.followup.send(f"No news found for {symbol}.")
             return
 
-        lines = []
+        embed = discord.Embed(
+            title=f"{symbol} News",
+            description="Latest headlines",
+        )
 
-        for article in articles[:3]:
-            title = None
-            link = None
+        added = 0
 
-            # Try common direct keys
+        for article in articles:
             title = article.get("title")
             link = article.get("link") or article.get("url")
+            publisher = article.get("publisher")
 
-            # Try nested content structure
             if not title and isinstance(article.get("content"), dict):
                 content = article["content"]
                 title = content.get("title")
-                link = link or content.get("canonicalUrl", {}).get("url")
+                if not link:
+                    canonical = content.get("canonicalUrl")
+                    if isinstance(canonical, dict):
+                        link = canonical.get("url")
+                if not publisher:
+                    provider = content.get("provider")
+                    if isinstance(provider, dict):
+                        publisher = provider.get("displayName")
 
-            # Try nested thumbnail/clickthrough style objects if present
             if not title and isinstance(article.get("headline"), str):
                 title = article.get("headline")
 
-            if not link and isinstance(article.get("canonicalUrl"), dict):
-                link = article["canonicalUrl"].get("url")
+            if not publisher:
+                publisher = "Unknown source"
 
-            # Final fallback
             if not title:
                 title = "Untitled article"
 
+            value = f"**Source:** {publisher}"
             if link:
-                lines.append(f"**{title}**\n{link}")
-            else:
-                lines.append(f"**{title}**")
+                value += f"\n[Read article]({link})"
 
-        if not lines:
-            await interaction.followup.send(f"No usable news articles found for {symbol}.")
+            embed.add_field(
+                name=title[:256],
+                value=value[:1024],
+                inline=False
+            )
+
+            added += 1
+            if added == 3:
+                break
+
+        if added == 0:
+            await interaction.followup.send(f"No usable news found for {symbol}.")
             return
 
-        message = "\n\n".join(lines)
-        await interaction.followup.send(message)
+        await interaction.followup.send(embed=embed)
 
     except Exception as e:
         print(f"NEWS ERROR: {e}")
