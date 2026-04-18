@@ -200,21 +200,30 @@ async def analyze(interaction: discord.Interaction, symbol: str):
     try:
         # Latest live trade
         latest_trade_req = StockLatestTradeRequest(
-            symbol_or_symbols=symbol,
+            symbol_or_symbols=[symbol],
             feed=ALPACA_FEED
         )
         latest_trade_resp = data_client.get_stock_latest_trade(latest_trade_req)
+
+        if symbol not in latest_trade_resp:
+            await interaction.followup.send(f"No latest trade data found for {symbol}.")
+            return
+
         latest_trade = latest_trade_resp[symbol]
         live_price = float(latest_trade.price)
 
-        # Snapshot for today's bar / previous daily bar
+        # Snapshot
         snapshot_req = StockSnapshotRequest(
-            symbol_or_symbols=symbol,
+            symbol_or_symbols=[symbol],
             feed=ALPACA_FEED
         )
         snapshot_resp = data_client.get_stock_snapshot(snapshot_req)
-        snapshot = snapshot_resp[symbol]
 
+        if symbol not in snapshot_resp:
+            await interaction.followup.send(f"No snapshot data found for {symbol}.")
+            return
+
+        snapshot = snapshot_resp[symbol]
         prev_daily_bar = snapshot.previous_daily_bar
         daily_bar = snapshot.daily_bar
 
@@ -227,20 +236,25 @@ async def analyze(interaction: discord.Interaction, symbol: str):
         if prev_close:
             pct_change = ((live_price - prev_close) / prev_close) * 100
 
-        # Daily bars for moving averages + PD high/low
+        # Daily bars
         daily_start = (now_ny - timedelta(days=90)).replace(
             hour=0, minute=0, second=0, microsecond=0
         ).astimezone(timezone.utc)
 
         daily_req = StockBarsRequest(
-            symbol_or_symbols=symbol,
+            symbol_or_symbols=[symbol],
             timeframe=TimeFrame.Day,
             start=daily_start,
             end=now_utc,
             feed=ALPACA_FEED
         )
         daily_bars_resp = data_client.get_stock_bars(daily_req)
-        daily_bars = daily_bars_resp[symbol]
+
+        if symbol not in daily_bars_resp.data:
+            await interaction.followup.send(f"No daily bar data found for {symbol}.")
+            return
+
+        daily_bars = daily_bars_resp.data[symbol]
 
         if len(daily_bars) < 50:
             await interaction.followup.send(f"Not enough daily data to analyze {symbol}.")
@@ -265,14 +279,15 @@ async def analyze(interaction: discord.Interaction, symbol: str):
             )
 
         bars_req = StockBarsRequest(
-            symbol_or_symbols=symbol,
+            symbol_or_symbols=[symbol],
             timeframe=TimeFrame.Minute,
             start=session_start_ny.astimezone(timezone.utc),
             end=now_utc,
             feed=ALPACA_FEED
         )
         minute_bars_resp = data_client.get_stock_bars(bars_req)
-        minute_bars = minute_bars_resp[symbol]
+
+        minute_bars = minute_bars_resp.data.get(symbol, [])
 
         premarket_high = None
         premarket_low = None
@@ -383,6 +398,5 @@ async def analyze(interaction: discord.Interaction, symbol: str):
     except Exception as e:
         print(f"ANALYZE ERROR: {e}")
         await interaction.followup.send(f"Error analyzing {symbol}: {e}")
-
 
 bot.run(TOKEN)
