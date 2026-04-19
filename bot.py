@@ -2,12 +2,10 @@ import os
 from datetime import datetime, timedelta, time, timezone
 from zoneinfo import ZoneInfo
 
-import aiohttp
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
-
 
 from news_service import get_ranked_news
 from scanner import MarketScanner
@@ -27,7 +25,6 @@ load_dotenv()
 # Environment variables
 # ---------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
-NEWS_API_KEY = os.getenv("ALPHA_VANTAGE_KEY")
 GUILD_ID_RAW = os.getenv("GUILD_ID")
 
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
@@ -36,6 +33,9 @@ ALPACA_FEED_RAW = os.getenv("ALPACA_FEED", "IEX").upper()
 
 SCANNER_CHANNEL_ID_RAW = os.getenv("SCANNER_CHANNEL_ID")
 SCANNER_CHANNEL_ID = int(SCANNER_CHANNEL_ID_RAW) if SCANNER_CHANNEL_ID_RAW else None
+
+BOT_CHANNEL_ID_RAW = os.getenv("BOT_CHANNEL_ID")
+BOT_CHANNEL_ID = int(BOT_CHANNEL_ID_RAW) if BOT_CHANNEL_ID_RAW else None
 
 if not TOKEN:
     raise ValueError("Missing DISCORD_TOKEN")
@@ -60,7 +60,9 @@ data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 # ---------------------------
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
-scanner_task_started = False 
+
+scanner_task_started = False
+daily_reset_ran = False
 
 # ---------------------------
 # Helpers
@@ -77,6 +79,40 @@ def fmt_volume(value):
     return f"{int(value):,}" if value is not None else "N/A"
 
 
+# ---------------------------
+# Daily cleanup task
+# ---------------------------
+@tasks.loop(minutes=1)
+async def daily_bot_channel_cleanup():
+    global daily_reset_ran
+
+    if not BOT_CHANNEL_ID:
+        return
+
+    now = datetime.now(ZoneInfo("America/Phoenix"))
+
+    # 6:00 AM Phoenix time
+    if now.hour == 6 and now.minute == 0:
+        if daily_reset_ran:
+            return
+
+        channel = bot.get_channel(BOT_CHANNEL_ID)
+        if channel is None:
+            return
+
+        try:
+            async for message in channel.history(limit=500):
+                if message.author == bot.user:
+                    await message.delete()
+
+            await channel.send("StockBuddy reset for new trading day, let’s make some money 💸")
+            daily_reset_ran = True
+
+        except Exception as e:
+            print(f"CHANNEL CLEANUP ERROR: {e}")
+
+    else:
+        daily_reset_ran = False
 
 
 # ---------------------------
@@ -85,6 +121,7 @@ def fmt_volume(value):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+
     try:
         guild = discord.Object(id=GUILD_ID)
         synced = await bot.tree.sync(guild=guild)
@@ -94,13 +131,16 @@ async def on_ready():
     except Exception as e:
         print(f"Sync error: {e}")
 
-
     global scanner_task_started
     if not scanner_task_started and SCANNER_CHANNEL_ID:
         scanner = MarketScanner(bot, SCANNER_CHANNEL_ID)
         bot.loop.create_task(scanner.run_forever())
         scanner_task_started = True
         print("Scanner started.")
+
+    if not daily_bot_channel_cleanup.is_running():
+        daily_bot_channel_cleanup.start()
+
 
 # ---------------------------
 # /help
@@ -113,12 +153,12 @@ async def help_command(interaction: discord.Interaction):
     )
     embed.add_field(
         name="/analyze [ticker]",
-        value="Live market snapshot with price, trend, levels, bias, and volume.",
+        value="Reference-only market snapshot with trend, levels, bias, and volume.",
         inline=False
     )
     embed.add_field(
         name="/news [ticker]",
-        value="Latest stock headlines.",
+        value="Top 5 most relevant stock headlines.",
         inline=False
     )
     embed.add_field(
@@ -172,6 +212,8 @@ async def news(interaction: discord.Interaction, symbol: str):
     except Exception as e:
         print(f"NEWS ERROR: {e}")
         await interaction.followup.send(f"Error fetching news for {symbol}: {e}")
+
+
 # ---------------------------
 # /analyze
 # ---------------------------
@@ -188,7 +230,6 @@ async def analyze(interaction: discord.Interaction, symbol: str):
     now_ny = now_utc.astimezone(ny_tz)
 
     try:
-        # Latest live trade
         latest_trade_req = StockLatestTradeRequest(
             symbol_or_symbols=[symbol],
             feed=ALPACA_FEED
@@ -202,7 +243,6 @@ async def analyze(interaction: discord.Interaction, symbol: str):
         latest_trade = latest_trade_resp[symbol]
         live_price = float(latest_trade.price)
 
-        # Snapshot
         snapshot_req = StockSnapshotRequest(
             symbol_or_symbols=[symbol],
             feed=ALPACA_FEED
@@ -226,7 +266,6 @@ async def analyze(interaction: discord.Interaction, symbol: str):
         if prev_close:
             pct_change = ((live_price - prev_close) / prev_close) * 100
 
-        # Daily bars for SMA 20, EMA 200, previous day high/low
         daily_start = (now_ny - timedelta(days=300)).replace(
             hour=0, minute=0, second=0, microsecond=0
         ).astimezone(timezone.utc)
@@ -265,7 +304,6 @@ async def analyze(interaction: discord.Interaction, symbol: str):
         prev_day_low = float(daily_bars[-2].low)
         avg_volume_20 = sum(float(bar.volume) for bar in daily_bars[-20:]) / 20
 
-        # Premarket bars
         if now_ny.time() < time(4, 0):
             session_start_ny = (now_ny - timedelta(days=1)).replace(
                 hour=4, minute=0, second=0, microsecond=0
@@ -300,7 +338,6 @@ async def analyze(interaction: discord.Interaction, symbol: str):
             premarket_high = max(pm_highs)
             premarket_low = min(pm_lows)
 
-        # Trend using SMA 20 and EMA 200
         if live_price > sma20 and live_price > ema200:
             trend_title = "Bullish"
             trend_detail = "Above SMA 20 & EMA 200"
@@ -314,7 +351,6 @@ async def analyze(interaction: discord.Interaction, symbol: str):
             trend_title = "Mixed"
             trend_detail = "Below SMA 20, above EMA 200"
 
-        # Volume context
         volume_text = "N/A"
         if today_volume is not None:
             rel_vol = today_volume / avg_volume_20 if avg_volume_20 else 0
@@ -328,35 +364,37 @@ async def analyze(interaction: discord.Interaction, symbol: str):
 
         # Bias
         bias_lines = []
-        
+
         if trend_title == "Bullish":
             if live_price > prev_day_high:
                 bias_header = f"Strength above {fmt_price(prev_day_high)} (Previous Day High)"
             else:
                 bias_header = f"Constructive above EMA 200, watching {fmt_price(prev_day_high)} reclaim"
+
             if today_low is not None:
                 bias_lines.append(f"• Loss of {fmt_price(today_low)} weakens structure")
-                
+
         elif trend_title == "Bearish":
             if live_price < prev_day_low:
                 bias_header = f"Weak below {fmt_price(prev_day_low)} (Previous Day Low)"
             else:
                 bias_header = f"Under pressure, watching {fmt_price(prev_day_low)} support"
+
             if today_low is not None:
                 bias_lines.append(f"• Below {fmt_price(today_low)} may extend weakness")
             if premarket_low is not None:
                 bias_lines.append(f"• Staying under {fmt_price(premarket_low)} keeps pressure on")
             if today_high is not None:
                 bias_lines.append(f"• Recovery above {fmt_price(today_high)} improves tone")
-                
+
         else:
             bias_header = "Mixed / range-bound until key levels break"
-            
+
             if today_high is not None:
                 bias_lines.append(f"• Above {fmt_price(today_high)} may improve trend")
             if today_low is not None:
                 bias_lines.append(f"• Below {fmt_price(today_low)} may weaken trend")
-                
+
             if premarket_high is not None and premarket_low is not None:
                 bias_lines.append(
                     f"• Premarket range: {fmt_price(premarket_low)} - {fmt_price(premarket_high)}"
@@ -364,8 +402,7 @@ async def analyze(interaction: discord.Interaction, symbol: str):
 
         bias_text = bias_header
         if bias_lines:
-            bias_text += "\n" + "\n".join(bias_lines)    
-
+            bias_text += "\n" + "\n".join(bias_lines)
 
         levels_text = (
             f"**Today High:** {fmt_price(today_high)}\n"
@@ -374,7 +411,7 @@ async def analyze(interaction: discord.Interaction, symbol: str):
             f"**Premarket Low:** {fmt_price(premarket_low)}\n"
             f"**Previous Day High:** {fmt_price(prev_day_high)}\n"
             f"**Previous Day Low:** {fmt_price(prev_day_low)}"
-            )
+        )
 
         embed = discord.Embed(
             title=f"{symbol} Analysis",
@@ -403,5 +440,6 @@ async def analyze(interaction: discord.Interaction, symbol: str):
     except Exception as e:
         print(f"ANALYZE ERROR: {e}")
         await interaction.followup.send(f"Error analyzing {symbol}: {e}")
-        
+
+
 bot.run(TOKEN)
