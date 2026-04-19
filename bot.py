@@ -328,55 +328,53 @@ async def analyze(interaction: discord.Interaction, symbol: str):
 
         # Bias
         bias_lines = []
-
+        
         if trend_title == "Bullish":
             if live_price > prev_day_high:
-                bias_header = f"Bullish above {fmt_price(prev_day_high)} (Previous Day High)"
+                bias_header = f"Strength above {fmt_price{prev_Day_high)} (Previous Day High)"
             else:
-                bias_header = f"Bullish, but needs reclaim of {fmt_price(prev_day_high)}"
-
-            if today_high is not None:
-                bias_lines.append(f"→ Watch continuation above {fmt_price(today_high)}")
-            if premarket_high is not None:
-                bias_lines.append(f"→ Stronger if holding above {fmt_price(premarket_high)}")
+                bias_header = f"Constructive above EMA 200, watching {fmt_price(prev_day_high)} reclaim"
             if today_low is not None:
-                bias_lines.append(f"→ Weakens below {fmt_price(today_low)}")
-
+                bias_lines.append(f"• Loss of {fmt_price(today_low)} weakens structure")
+                
         elif trend_title == "Bearish":
             if live_price < prev_day_low:
-                bias_header = f"Bearish below {fmt_price(prev_day_low)} (Previous Day Low)"
+                bias_header = f"Weak below {fmt_price(prev_day_low)} (Previous Day Low)"
             else:
-                bias_header = f"Bearish, but needs loss of {fmt_price(prev_day_low)}"
-
+                bias_header = f"Under pressure, watching {fmt_price(prev_day_low)} support"
             if today_low is not None:
-                bias_lines.append(f"→ Watch continuation below {fmt_price(today_low)}")
+                bias_lines.append(f"• Below {fmt_price(today_low)} may extend weakness")
             if premarket_low is not None:
-                bias_lines.append(f"→ Stronger if staying below {fmt_price(premarket_low)}")
+                bias_lines.append(f"• Staying under {fmt_price(premarket_low)} keeps pressure on")
             if today_high is not None:
-                bias_lines.append(f"→ Weakens above {fmt_price(today_high)}")
-
+                bias_lines.append(f"• Recovery above {fmt_price(today_high)} improves tone")
+                
         else:
-            bias_header = "Range / mixed until key levels break"
-            if today_high is not None and today_low is not None:
-                bias_lines.append(f"→ Above {fmt_price(today_high)} could trend")
-                bias_lines.append(f"→ Below {fmt_price(today_low)} could break down")
+            bias_header = "Mixed / range-bound until key levels break"
+            
+            if today_high is not None:
+                bias_lines.append(f"• Above {fmt_price(today_high)} may improve trend")
+            if today_low is not None:
+                bias_lines.append(f"• Below {fmt_price(today_low)} may weaken trend")
+                
             if premarket_high is not None and premarket_low is not None:
                 bias_lines.append(
-                    f"→ Watch premarket range {fmt_price(premarket_low)} - {fmt_price(premarket_high)}"
+                    f"• Premarket range: {fmt_price(premarket_low)} - {fmt_price(premarket_high)}"
                 )
 
-        bias_text = bias_header
-        if bias_lines:
-            bias_text += "\n" + "\n".join(bias_lines)
+bias_text = bias_header
+if bias_lines:
+    bias_text += "\n" + "\n".join(bias_lines)    
 
-        levels_text = (
-            f"**Today High:** {fmt_price(today_high)}\n"
-            f"**Today Low:** {fmt_price(today_low)}\n"
-            f"**Premarket High:** {fmt_price(premarket_high)}\n"
-            f"**Premarket Low:** {fmt_price(premarket_low)}\n"
-            f"**Previous Day High:** {fmt_price(prev_day_high)}\n"
-            f"**Previous Day Low:** {fmt_price(prev_day_low)}"
-        )
+
+            levels_text = (
+                f"**Today High:** {fmt_price(today_high)}\n"
+                f"**Today Low:** {fmt_price(today_low)}\n"
+                f"**Premarket High:** {fmt_price(premarket_high)}\n"
+                f"**Premarket Low:** {fmt_price(premarket_low)}\n"
+                f"**Previous Day High:** {fmt_price(prev_day_high)}\n"
+                f"**Previous Day Low:** {fmt_price(prev_day_low)}"
+            )
 
         embed = discord.Embed(
             title=f"{symbol} Analysis",
