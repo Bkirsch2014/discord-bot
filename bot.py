@@ -7,7 +7,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-import yfinance as yf
+
+
+from news_service import get_ranked_news
+from scanner import MarketScanner
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
@@ -30,6 +33,9 @@ GUILD_ID_RAW = os.getenv("GUILD_ID")
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 ALPACA_FEED_RAW = os.getenv("ALPACA_FEED", "IEX").upper()
+
+SCANNER_CHANNEL_ID_RAW = os.getenv("SCANNER_CHANNEL_ID")
+SCANNER_CHANNEL_ID = int(SCANNER_CHANNEL_ID_RAW) if SCANNER_CHANNEL_ID_RAW else None
 
 if not TOKEN:
     raise ValueError("Missing DISCORD_TOKEN")
@@ -54,7 +60,7 @@ data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 # ---------------------------
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
-
+scanner_task_started = False 
 
 # ---------------------------
 # Helpers
@@ -71,14 +77,6 @@ def fmt_volume(value):
     return f"{int(value):,}" if value is not None else "N/A"
 
 
-def get_trend(price: float, ma20: float, ma50: float):
-    if price > ma20 and price > ma50:
-        return "Bullish", "Above 20 & 50 MA"
-    if price < ma20 and price < ma50:
-        return "Bearish", "Below 20 & 50 MA"
-    if price > ma20 and price < ma50:
-        return "Mixed", "Above 20, below 50 MA"
-    return "Mixed", "Below 20, above 50 MA"
 
 
 # ---------------------------
@@ -96,6 +94,13 @@ async def on_ready():
     except Exception as e:
         print(f"Sync error: {e}")
 
+
+    global scanner_task_started
+    if not scanner_task_started and SCANNER_CHANNEL_ID:
+        scanner = MarketScanner(bot, SCANNER_CHANNEL_ID)
+        bot.loop.create_task(scanner.run_forever())
+        scanner_task_started = True
+        print("Scanner started.")
 
 # ---------------------------
 # /help
@@ -136,8 +141,7 @@ async def news(interaction: discord.Interaction, symbol: str):
     symbol = symbol.upper().strip()
 
     try:
-        ticker = yf.Ticker(symbol)
-        articles = ticker.news
+        articles = await get_ranked_news(symbol, top_n=5)
 
         if not articles:
             await interaction.followup.send(f"No news found for {symbol}.")
@@ -145,54 +149,23 @@ async def news(interaction: discord.Interaction, symbol: str):
 
         embed = discord.Embed(
             title=f"{symbol} News",
-            description="Latest headlines",
+            description="Top 5 most relevant headlines",
         )
 
-        added = 0
-
         for article in articles:
-            title = article.get("title")
-            link = article.get("link") or article.get("url")
-            publisher = article.get("publisher")
+            title = article.get("title", "Untitled article")
+            source = article.get("source", "Unknown source")
+            url = article.get("url", "")
 
-            if not title and isinstance(article.get("content"), dict):
-                content = article["content"]
-                title = content.get("title")
-                if not link:
-                    canonical = content.get("canonicalUrl")
-                    if isinstance(canonical, dict):
-                        link = canonical.get("url")
-                if not publisher:
-                    provider = content.get("provider")
-                    if isinstance(provider, dict):
-                        publisher = provider.get("displayName")
-
-            if not title and isinstance(article.get("headline"), str):
-                title = article.get("headline")
-
-            if not publisher:
-                publisher = "Unknown source"
-
-            if not title:
-                title = "Untitled article"
-
-            value = f"**Source:** {publisher}"
-            if link:
-                value += f"\n[Read article]({link})"
+            value = f"**Source:** {source}"
+            if url:
+                value += f"\n[Read article]({url})"
 
             embed.add_field(
                 name=title[:256],
                 value=value[:1024],
                 inline=False
             )
-
-            added += 1
-            if added == 3:
-                break
-
-        if added == 0:
-            await interaction.followup.send(f"No usable news found for {symbol}.")
-            return
 
         await interaction.followup.send(embed=embed)
 
@@ -432,4 +405,5 @@ async def analyze(interaction: discord.Interaction, symbol: str):
     except Exception as e:
         print(f"ANALYZE ERROR: {e}")
         await interaction.followup.send(f"Error analyzing {symbol}: {e}")
+        
 bot.run(TOKEN)
