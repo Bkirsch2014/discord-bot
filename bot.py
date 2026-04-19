@@ -226,7 +226,7 @@ async def analyze(interaction: discord.Interaction, symbol: str):
         if prev_close:
             pct_change = ((live_price - prev_close) / prev_close) * 100
 
-        # Daily bars for EMA 20, SMA 200, previous day high/low
+        # Daily bars for SMA 20, EMA 200, previous day high/low
         daily_start = (now_ny - timedelta(days=300)).replace(
             hour=0, minute=0, second=0, microsecond=0
         ).astimezone(timezone.utc)
@@ -252,14 +252,14 @@ async def analyze(interaction: discord.Interaction, symbol: str):
 
         closes = [float(bar.close) for bar in daily_bars]
 
-        # EMA 20
-        ema20 = closes[0]
-        multiplier = 2 / (20 + 1)
-        for close in closes[1:]:
-            ema20 = (close - ema20) * multiplier + ema20
+        # SMA 20
+        sma20 = sum(closes[-20:]) / 20
 
-        # SMA 200
-        sma200 = sum(closes[-200:]) / 200
+        # EMA 200
+        ema200 = closes[0]
+        multiplier = 2 / (200 + 1)
+        for close in closes[1:]:
+            ema200 = (close - ema200) * multiplier + ema200
 
         prev_day_high = float(daily_bars[-2].high)
         prev_day_low = float(daily_bars[-2].low)
@@ -300,19 +300,19 @@ async def analyze(interaction: discord.Interaction, symbol: str):
             premarket_high = max(pm_highs)
             premarket_low = min(pm_lows)
 
-        # Trend using EMA 20 and SMA 200
-        if live_price > ema20 and live_price > sma200:
+        # Trend using SMA 20 and EMA 200
+        if live_price > sma20 and live_price > ema200:
             trend_title = "Bullish"
-            trend_detail = "Above EMA 20 & SMA 200"
-        elif live_price < ema20 and live_price < sma200:
+            trend_detail = "Above SMA 20 & EMA 200"
+        elif live_price < sma20 and live_price < ema200:
             trend_title = "Bearish"
-            trend_detail = "Below EMA 20 & SMA 200"
-        elif live_price > ema20 and live_price < sma200:
+            trend_detail = "Below SMA 20 & EMA 200"
+        elif live_price > sma20 and live_price < ema200:
             trend_title = "Mixed"
-            trend_detail = "Above EMA 20, below SMA 200"
+            trend_detail = "Above SMA 20, below EMA 200"
         else:
             trend_title = "Mixed"
-            trend_detail = "Below EMA 20, above SMA 200"
+            trend_detail = "Below SMA 20, above EMA 200"
 
         # Volume context
         volume_text = "N/A"
@@ -393,8 +393,8 @@ async def analyze(interaction: discord.Interaction, symbol: str):
             inline=False
         )
 
-        embed.add_field(name="EMA 20", value=fmt_price(ema20), inline=True)
-        embed.add_field(name="SMA 200", value=fmt_price(sma200), inline=True)
+        embed.add_field(name="SMA 20", value=fmt_price(sma20), inline=True)
+        embed.add_field(name="EMA 200", value=fmt_price(ema200), inline=True)
         embed.add_field(name="Previous Close", value=fmt_price(prev_close), inline=True)
 
         embed.add_field(name="Levels", value=levels_text, inline=False)
