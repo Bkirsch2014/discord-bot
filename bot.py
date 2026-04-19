@@ -331,7 +331,7 @@ async def analyze(interaction: discord.Interaction, symbol: str):
         
         if trend_title == "Bullish":
             if live_price > prev_day_high:
-                bias_header = f"Strength above {fmt_price(prev_Day_high)} (Previous Day High)"
+                bias_header = f"Strength above {fmt_price(prev_day_high)} (Previous Day High)"
             else:
                 bias_header = f"Constructive above EMA 200, watching {fmt_price(prev_day_high)} reclaim"
             if today_low is not None:
@@ -362,18 +362,18 @@ async def analyze(interaction: discord.Interaction, symbol: str):
                     f"• Premarket range: {fmt_price(premarket_low)} - {fmt_price(premarket_high)}"
                 )
 
-bias_text = bias_header
-if bias_lines:
-    bias_text += "\n" + "\n".join(bias_lines)    
+        bias_text = bias_header
+        if bias_lines:
+            bias_text += "\n" + "\n".join(bias_lines)    
 
 
-            levels_text = (
-                f"**Today High:** {fmt_price(today_high)}\n"
-                f"**Today Low:** {fmt_price(today_low)}\n"
-                f"**Premarket High:** {fmt_price(premarket_high)}\n"
-                f"**Premarket Low:** {fmt_price(premarket_low)}\n"
-                f"**Previous Day High:** {fmt_price(prev_day_high)}\n"
-                f"**Previous Day Low:** {fmt_price(prev_day_low)}"
+        levels_text = (
+            f"**Today High:** {fmt_price(today_high)}\n"
+            f"**Today Low:** {fmt_price(today_low)}\n"
+            f"**Premarket High:** {fmt_price(premarket_high)}\n"
+            f"**Premarket Low:** {fmt_price(premarket_low)}\n"
+            f"**Previous Day High:** {fmt_price(prev_day_high)}\n"
+            f"**Previous Day Low:** {fmt_price(prev_day_low)}"
             )
 
         embed = discord.Embed(
