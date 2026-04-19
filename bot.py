@@ -331,7 +331,7 @@ async def analyze(interaction: discord.Interaction, symbol: str):
         
         if trend_title == "Bullish":
             if live_price > prev_day_high:
-                bias_header = f"Strength above {fmt_price{prev_Day_high)} (Previous Day High)"
+                bias_header = f"Strength above {fmt_price(prev_Day_high)} (Previous Day High)"
             else:
                 bias_header = f"Constructive above EMA 200, watching {fmt_price(prev_day_high)} reclaim"
             if today_low is not None:
