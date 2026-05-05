@@ -123,8 +123,7 @@ async def on_ready():
     print(f"Logged in as {bot.user}")
 
     try:
-        guild = discord.Object(id=GUILD_ID)
-        synced = await bot.tree.sync(guild=guild)
+        synced = await bot.tree.sync()
         print(f"Synced {len(synced)} commands")
         for cmd in synced:
             print(f"- {cmd.name}")
@@ -145,7 +144,7 @@ async def on_ready():
 # ---------------------------
 # /help
 # ---------------------------
-@bot.tree.command(name="help", description="Show bot commands", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="help", description="Show bot commands")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="StockBuddyBot Commands",
@@ -173,7 +172,7 @@ async def help_command(interaction: discord.Interaction):
 # ---------------------------
 # /news
 # ---------------------------
-@bot.tree.command(name="news", description="Get stock news", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="news", description="Get stock news")
 @app_commands.describe(symbol="Stock ticker")
 async def news(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
@@ -217,7 +216,7 @@ async def news(interaction: discord.Interaction, symbol: str):
 # ---------------------------
 # /analyze
 # ---------------------------
-@bot.tree.command(name="analyze", description="Live market data snapshot", guild=discord.Object(id=GUILD_ID))
+@bot.tree.command(name="analyze", description="Live market data snapshot")
 @app_commands.describe(symbol="Stock ticker")
 async def analyze(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
