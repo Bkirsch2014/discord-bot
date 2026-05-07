@@ -124,10 +124,18 @@ async def on_ready():
 
     try:
         guild = discord.Object(id=GUILD_ID)
+
+        # Clear old global commands so stale /news /help disappear
+        bot.tree.clear_commands(guild=None)
+        await bot.tree.sync()
+
+        # Sync commands only to your server
         synced = await bot.tree.sync(guild=guild)
-        print(f"Synced {len(synced)} commands")
+
+        print(f"Synced {len(synced)} guild commands")
         for cmd in synced:
             print(f"- {cmd.name}")
+
     except Exception as e:
         print(f"Sync error: {e}")
 
@@ -140,7 +148,6 @@ async def on_ready():
 
     if not daily_bot_channel_cleanup.is_running():
         daily_bot_channel_cleanup.start()
-
 
 # ---------------------------
 # /help
