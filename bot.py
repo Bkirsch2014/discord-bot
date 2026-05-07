@@ -44,7 +44,7 @@ if not GUILD_ID_RAW:
 if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
     raise ValueError("Missing ALPACA_API_KEY or ALPACA_SECRET_KEY")
 
-GUILD_ID = int(GUILD_ID_RAW)
+GUILD_ID = 1501303497839083611
 
 feed_map = {
     "IEX": DataFeed.IEX,
@@ -123,7 +123,8 @@ async def on_ready():
     print(f"Logged in as {bot.user}")
 
     try:
-        synced = await bot.tree.sync()
+        guild = discord.Object(id=GUILD_ID)
+        synced = await bot.tree.sync(guild=guild)
         print(f"Synced {len(synced)} commands")
         for cmd in synced:
             print(f"- {cmd.name}")
@@ -144,7 +145,7 @@ async def on_ready():
 # ---------------------------
 # /help
 # ---------------------------
-@bot.tree.command(name="help", description="Show bot commands")
+@bot.tree.command(name="help", description="Show bot commands", guild=discord.Object(id=GUILD_ID))
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="StockBuddyBot Commands",
@@ -172,7 +173,7 @@ async def help_command(interaction: discord.Interaction):
 # ---------------------------
 # /news
 # ---------------------------
-@bot.tree.command(name="news", description="Get stock news")
+@bot.tree.command(name="news", description="Get stock news", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(symbol="Stock ticker")
 async def news(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
@@ -216,7 +217,7 @@ async def news(interaction: discord.Interaction, symbol: str):
 # ---------------------------
 # /analyze
 # ---------------------------
-@bot.tree.command(name="analyze", description="Live market data snapshot")
+@bot.tree.command(name="analyze", description="Live market data snapshot", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(symbol="Stock ticker")
 async def analyze(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
